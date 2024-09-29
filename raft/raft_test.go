@@ -87,7 +87,7 @@ func TestLeaderElection2AA(t *testing.T) {
 	}
 
 	for i, tt := range tests {
-		tt.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
+		tt.network.send(pb.Message{From: 1, To: 1, MsgType: pb.MessageType_MsgHup})
 		sm := tt.network.peers[1].(*Raft)
 		if sm.State != tt.state {
 			t.Errorf("#%d: state = %s, want %s", i, sm.State, tt.state)
@@ -562,10 +562,10 @@ func TestProposal2AB(t *testing.T) {
 }
 
 // TestHandleMessageType_MsgAppend ensures:
-// 1. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm.
-// 2. If an existing entry conflicts with a new one (same index but different terms),
-//    delete the existing entry and all that follow it; append any new entries not already in the log.
-// 3. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry).
+//  1. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm.
+//  2. If an existing entry conflicts with a new one (same index but different terms),
+//     delete the existing entry and all that follow it; append any new entries not already in the log.
+//  3. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry).
 func TestHandleMessageType_MsgAppend2AB(t *testing.T) {
 	tests := []struct {
 		m       pb.Message
@@ -1629,11 +1629,13 @@ func newNetworkWithConfig(configFunc func(*Config), peers ...stateMachine) *netw
 	}
 }
 
+// send cache message in queue, stop after all messages are consumed
 func (nw *network) send(msgs ...pb.Message) {
 	for len(msgs) > 0 {
 		m := msgs[0]
 		p := nw.peers[m.To]
 		p.Step(m)
+		// read message from raft and handle it in next loop
 		msgs = append(msgs[1:], nw.filter(p.readMessages())...)
 	}
 }
@@ -1678,6 +1680,7 @@ func (nw *network) filter(msgs []pb.Message) []pb.Message {
 			panic("unexpected MessageType_MsgHup")
 		default:
 			perc := nw.dropm[connem{m.From, m.To}]
+			// if perc is 1.0，will ignore this message
 			if n := rand.Float64(); n < perc {
 				continue
 			}

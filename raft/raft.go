@@ -132,7 +132,7 @@ type Raft struct {
 	// votes records, use for candidate count on the total granted votes
 	votes map[uint64]bool
 
-	// msgs need to send
+	// msgs need to send, used by RawNode
 	msgs []pb.Message
 
 	// the leader id
@@ -187,7 +187,7 @@ func newRaft(c *Config) *Raft {
 	rf.Prs = make(map[uint64]*Progress, len(c.peers))
 	rf.State = StateFollower
 	rf.votes = make(map[uint64]bool)
-	rf.msgs = make([]pb.Message, 0)
+	rf.msgs = nil
 	rf.Lead = None
 	rf.heartbeatTimeout = c.HeartbeatTick
 	rf.electionTimeout = c.ElectionTick

@@ -70,12 +70,27 @@ type Ready struct {
 type RawNode struct {
 	Raft *Raft
 	// Your Data Here (2A).
+	softState *SoftState
+	hardState *pb.HardState
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
 	// Your Code Here (2A).
-	return nil, nil
+	hardState, _, err := config.Storage.InitialState()
+	if err != nil {
+		return nil, err
+	}
+
+	rn := new(RawNode)
+	rn.Raft = newRaft(config)
+	rn.softState = &SoftState{
+		Lead:      rn.Raft.Lead,
+		RaftState: rn.Raft.State,
+	}
+	rn.hardState = &hardState
+
+	return rn, nil
 }
 
 // Tick advances the internal logical clock by a single tick.
@@ -143,7 +158,29 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
-	return Ready{}
+
+	ready := Ready{}
+
+	if rn.isSoftStateChanged() {
+		ready.SoftState = &SoftState{
+			Lead:      rn.Raft.Lead,
+			RaftState: rn.Raft.State,
+		}
+	}
+
+	if rn.isHardStateChanged() {
+		ready.HardState = pb.HardState{
+			Term:   rn.Raft.Term,
+			Vote:   rn.Raft.Vote,
+			Commit: rn.Raft.RaftLog.committed,
+		}
+	}
+
+	ready.Entries = rn.Raft.RaftLog.unstableEntries()
+	ready.CommittedEntries = rn.Raft.RaftLog.nextEnts()
+	ready.Messages = rn.Raft.msgs
+
+	return ready
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
@@ -156,6 +193,9 @@ func (rn *RawNode) HasReady() bool {
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
+	rn.Raft.RaftLog.stabled += uint64(len(rd.Entries))
+	rn.Raft.RaftLog.applied += uint64(len(rd.CommittedEntries))
+
 }
 
 // GetProgress return the Progress of this node and its peers, if this
@@ -173,4 +213,18 @@ func (rn *RawNode) GetProgress() map[uint64]Progress {
 // TransferLeader tries to transfer leadership to the given transferee.
 func (rn *RawNode) TransferLeader(transferee uint64) {
 	_ = rn.Raft.Step(pb.Message{MsgType: pb.MessageType_MsgTransferLeader, From: transferee})
+}
+
+func (rn *RawNode) isSoftStateChanged() bool {
+	if rn.softState.Lead != rn.Raft.Lead || rn.softState.RaftState != rn.Raft.State {
+		return true
+	}
+	return false
+}
+
+func (rn *RawNode) isHardStateChanged() bool {
+	if rn.hardState.Term != rn.Raft.Term || rn.hardState.Vote != rn.Raft.Vote || rn.hardState.Commit != rn.Raft.RaftLog.committed {
+		return true
+	}
+	return false
 }

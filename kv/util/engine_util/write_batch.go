@@ -22,6 +22,10 @@ const (
 
 var CFs [3]string = [3]string{CfDefault, CfWrite, CfLock}
 
+func NewWriteBatch() *WriteBatch {
+	return &WriteBatch{}
+}
+
 func (wb *WriteBatch) Len() int {
 	return len(wb.entries)
 }
@@ -34,6 +38,7 @@ func (wb *WriteBatch) SetCF(cf string, key, val []byte) {
 	wb.size += len(key) + len(val)
 }
 
+// DeleteMeta update key without value which means a deleted field
 func (wb *WriteBatch) DeleteMeta(key []byte) {
 	wb.entries = append(wb.entries, &badger.Entry{
 		Key: key,

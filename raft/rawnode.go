@@ -185,17 +185,28 @@ func (rn *RawNode) Ready() Ready {
 
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
-	// Your Code Here (2A).
-	return false
+	return len(rn.Raft.msgs) > 0 || // Has message ready to be sent
+		rn.isHardStateChanged() || // Need to store raft state
+		len(rn.Raft.RaftLog.unstableEntries()) > 0 || // Need to update WAL log on leader
+		len(rn.Raft.RaftLog.nextEnts()) > 0 // Need to send peers to commit
 }
 
 // Advance notifies the RawNode that the application has applied and saved progress in the
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
 	// Your Code Here (2A).
+
 	rn.Raft.RaftLog.stabled += uint64(len(rd.Entries))
 	rn.Raft.RaftLog.applied += uint64(len(rd.CommittedEntries))
+	rn.Raft.msgs = nil // clear message
 
+	if !IsEmptyHardState(rd.HardState) {
+		rn.hardState = &rd.HardState
+	}
+
+	if rd.SoftState != nil {
+		rn.softState = rd.SoftState
+	}
 }
 
 // GetProgress return the Progress of this node and its peers, if this
@@ -216,15 +227,11 @@ func (rn *RawNode) TransferLeader(transferee uint64) {
 }
 
 func (rn *RawNode) isSoftStateChanged() bool {
-	if rn.softState.Lead != rn.Raft.Lead || rn.softState.RaftState != rn.Raft.State {
-		return true
-	}
-	return false
+	return rn.softState.Lead != rn.Raft.Lead || rn.softState.RaftState != rn.Raft.State
 }
 
 func (rn *RawNode) isHardStateChanged() bool {
-	if rn.hardState.Term != rn.Raft.Term || rn.hardState.Vote != rn.Raft.Vote || rn.hardState.Commit != rn.Raft.RaftLog.committed {
-		return true
-	}
-	return false
+	return rn.hardState.Term != rn.Raft.Term ||
+		rn.hardState.Vote != rn.Raft.Vote ||
+		rn.hardState.Commit != rn.Raft.RaftLog.committed
 }

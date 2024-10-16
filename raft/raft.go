@@ -174,9 +174,13 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 
-	hardState, _, err := c.Storage.InitialState()
+	hardState, confState, err := c.Storage.InitialState()
 	if err != nil {
 		panic(err.Error())
+	}
+	// Get peers from storage config state when bootstrap
+	if c.peers == nil {
+		c.peers = confState.Nodes
 	}
 
 	rf := new(Raft)
@@ -184,7 +188,7 @@ func newRaft(c *Config) *Raft {
 	rf.Term = hardState.Term // read term from storage's hardstate
 	rf.Vote = hardState.Vote // read vote from storage's hardstate
 	rf.RaftLog = newLog(c.Storage)
-	rf.Prs = make(map[uint64]*Progress, len(c.peers))
+	rf.Prs = make(map[uint64]*Progress)
 	rf.State = StateFollower
 	rf.votes = make(map[uint64]bool)
 	rf.msgs = nil
@@ -266,7 +270,7 @@ func (r *Raft) handleFollowerTick() {
 	r.electionElapsed++
 	if r.electionElapsed >= r.randomElectionTimeout {
 		r.electionElapsed = 0
-		// MessageType_MsgHup is internal message, don't need RawNode to manage the message
+		// MessageType_MsgHup is local message, don't need RawNode to manage the message
 		r.Step(pb.Message{
 			MsgType: pb.MessageType_MsgHup,
 			From:    r.id,
@@ -280,7 +284,7 @@ func (r *Raft) handleCandidateTick() {
 	r.electionElapsed++
 	if r.electionElapsed >= r.randomElectionTimeout {
 		r.electionElapsed = 0
-		// MessageType_MsgHup is internal message, don't need RawNode to manage the message
+		// MessageType_MsgHup is local message, don't need RawNode to manage the message
 		r.Step(pb.Message{
 			MsgType: pb.MessageType_MsgHup,
 			From:    r.id,
@@ -295,7 +299,7 @@ func (r *Raft) handleLeaderTick() {
 	if r.heartbeatElapsed >= r.heartbeatTimeout {
 		r.heartbeatElapsed = 0
 
-		// MessageType_MsgHeartbeat is internal message, don't need RawNode to manage the message
+		// MessageType_MsgHeartbeat is local message, don't need RawNode to manage the message
 		r.Step(pb.Message{
 			MsgType: pb.MessageType_MsgBeat,
 			From:    r.id,
@@ -840,14 +844,8 @@ func (r *Raft) isLogMoreUpdateToDate(term, index uint64) bool {
 	return prevIndex > index
 }
 
-type Uint64Slice []uint64
-
-func (s Uint64Slice) Len() int           { return len(s) }
-func (s Uint64Slice) Less(i, j int) bool { return s[i] < s[j] }
-func (s Uint64Slice) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
-
 func (r *Raft) getMajorityMatchIndex() uint64 {
-	matchIndexes := make(Uint64Slice, 0)
+	matchIndexes := make(uint64Slice, 0)
 	for _, progress := range r.Prs {
 		matchIndexes = append(matchIndexes, progress.Match)
 	}

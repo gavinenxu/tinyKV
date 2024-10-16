@@ -21,7 +21,7 @@ type raftWorker struct {
 
 func newRaftWorker(ctx *GlobalContext, pm *router) *raftWorker {
 	return &raftWorker{
-		raftCh: pm.peerSender,
+		raftCh: pm.peerSender, // Get message from raft server or raftCommandMessage
 		ctx:    ctx,
 		pr:     pm,
 	}

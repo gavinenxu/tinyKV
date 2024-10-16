@@ -19,8 +19,8 @@ type peerState struct {
 
 // router routes a message to a peer.
 type router struct {
-	peers       sync.Map // regionID -> peerState
-	peerSender  chan message.Msg
+	peers       sync.Map         // regionID -> peerState
+	peerSender  chan message.Msg // Msg channel to send message to raftCh
 	storeSender chan<- message.Msg
 }
 

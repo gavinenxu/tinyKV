@@ -30,6 +30,9 @@ type ApplySnapResult struct {
 
 var _ raft.Storage = new(PeerStorage)
 
+// raftdb stores raft log and RaftLocalState
+// kvdb stores key-value data in different column families, RegionLocalState and RaftApplyState
+
 type PeerStorage struct {
 	// current region information of the peer
 	region *metapb.Region
@@ -308,6 +311,32 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
+	if len(entries) == 0 {
+		return nil
+	}
+
+	// update raft state's write batch
+	for _, entry := range entries {
+		metaKey := meta.RaftLogKey(ps.region.Id, entry.Index)
+		if err := raftWB.SetMeta(metaKey, &entry); err != nil {
+			return err
+		}
+	}
+
+	// delete uncommitted log entries
+	term, index := entries[len(entries)-1].Term, entries[len(entries)-1].Index
+	prevIndex, _ := ps.LastIndex()
+
+	// if prevIndex greater than current index, (index, prevIndex] has no chance to be committed, should delete them
+	for i := index + 1; i <= prevIndex; i++ {
+		metaKey := meta.RaftLogKey(ps.region.Id, i)
+		raftWB.DeleteMeta(metaKey)
+	}
+
+	// update to new index and term from input entry
+	ps.raftState.LastTerm = term
+	ps.raftState.LastIndex = index
+
 	return nil
 }
 
@@ -331,6 +360,28 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
+
+	// start a write batch to save states
+	raftWb := &engine_util.WriteBatch{}
+
+	// save unstable entries
+	if err := ps.Append(ready.Entries, raftWb); err != nil {
+		return nil, err
+	}
+
+	// save raft local state
+	if err := raftWb.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState); err != nil {
+		return nil, err
+	}
+
+	// commit write batch
+	raftWb.MustWriteToDB(ps.Engines.Raft)
+
+	// save hard state
+	if !raft.IsEmptyHardState(ready.HardState) {
+		ps.raftState.HardState = &ready.HardState
+	}
+
 	return nil, nil
 }
 

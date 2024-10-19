@@ -111,7 +111,7 @@ func (c *Config) validate() error {
 // Progress represents a follower’s progress in the view of the leader. Leader maintains
 // progresses of all followers, and sends entries to the follower based on its progress.
 type Progress struct {
-	Match, Next uint64
+	Match, Next uint64 // Match is to calc log's commited index (which is correct value), Next is to get prev index (not always correct, will be rollback)
 }
 
 type Raft struct {
@@ -201,26 +201,23 @@ func newRaft(c *Config) *Raft {
 	rf.PendingConfIndex = 0
 	rf.randomElectionTimeout = 0
 
-	for _, peer := range c.peers {
-		// initialize peer's next index from storage while bootstrap
-		lastIndex, _ := c.Storage.LastIndex()
-		rf.Prs[peer] = &Progress{
-			Match: lastIndex,
-			Next:  lastIndex + 1,
-		}
-	}
+	// initialize peer's index from storage while bootstrap
+	lastIndex, _ := c.Storage.LastIndex()
+	rf.Prs = rf.initProgresses(c.peers, lastIndex)
 
 	return rf
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
+// send append log also responsible for sending snapshot once the peer's log is not same as leader's log (For example, leader has updated truncated index, but peer not install it yet, prev index < truncated index )
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
 	prevLogIndex := r.Prs[to].Next - 1
 	prevLogTerm, err := r.RaftLog.Term(prevLogIndex)
 
 	if err != nil {
+		r.sendSnapshot(to)
 		return false
 	}
 
@@ -387,6 +384,7 @@ func (r *Raft) handleFollowerStep(m pb.Message) {
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgRequestVoteResponse:
 	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgHeartbeatResponse:
@@ -409,6 +407,7 @@ func (r *Raft) handleCandidateStep(m pb.Message) {
 	case pb.MessageType_MsgRequestVoteResponse:
 		r.handleRequestVoteResponse(m)
 	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgHeartbeatResponse:
@@ -659,8 +658,34 @@ func (r *Raft) handleHeartbeatResponse(m pb.Message) {
 }
 
 // handleSnapshot handle Snapshot RPC request
+// requester: leader
+// receiver:  follower and candidate
+// sendTo: leader
 func (r *Raft) handleSnapshot(m pb.Message) {
 	// Your Code Here (2C).
+	reply := pb.Message{
+		MsgType: pb.MessageType_MsgAppendResponse,
+		From:    r.id,
+		To:      m.From,
+		Term:    r.Term,
+		Reject:  false,
+	}
+
+	if r.Term > m.Term {
+		reply.Reject = true
+	} else if r.RaftLog.committed > m.Snapshot.Metadata.Index {
+		reply.Reject = true
+		reply.Index = r.RaftLog.committed
+	} else {
+		r.becomeFollower(m.Term, m.From)
+		r.RaftLog.installSnapshot(m.Snapshot)
+		// update conf change for peers
+		r.Prs = r.initProgresses(m.Snapshot.Metadata.ConfState.Nodes, m.Snapshot.Metadata.Index)
+
+		reply.Index = r.RaftLog.committed
+	}
+
+	r.msgs = append(r.msgs, reply)
 }
 
 // handleStartElection handle startElection RPC request
@@ -805,12 +830,13 @@ func (r *Raft) handlePropose(m pb.Message) {
 		return
 	}
 
-	// broadcast to peers to commit logs
+	// broadcast to peers to commit logsgyyyy6
 	for peer := range r.Prs {
 		if peer == r.id {
 			continue
 		}
 
+		// fail to send peer to append log
 		r.sendAppend(peer)
 	}
 }
@@ -855,4 +881,40 @@ func (r *Raft) getMajorityMatchIndex() uint64 {
 	// get most match index greater than mid-index
 	mid := (len(matchIndexes) - 1) / 2
 	return matchIndexes[mid]
+}
+
+func (r *Raft) initProgresses(peers []uint64, index uint64) map[uint64]*Progress {
+	ps := make(map[uint64]*Progress)
+
+	for _, peer := range peers {
+		ps[peer] = &Progress{
+			Match: index,
+			Next:  index + 1,
+		}
+	}
+
+	return ps
+}
+
+func (r *Raft) sendSnapshot(to uint64) {
+	snap, err := r.RaftLog.storage.Snapshot()
+	if err == ErrSnapshotTemporarilyUnavailable {
+		// leader use goroutine to async install snap, which is not ready yet, just return,
+		// and peer will retry next time by heart beat or propose log
+		return
+	}
+	if err != nil {
+		panic(err)
+	}
+
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType:  pb.MessageType_MsgSnapshot,
+		From:     r.id,
+		To:       to,
+		Term:     r.Term,
+		Snapshot: &snap,
+	})
+
+	// advance next index to prevent resending snapshot
+	r.Prs[to].Next = snap.Metadata.Index + 1
 }

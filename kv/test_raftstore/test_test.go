@@ -433,6 +433,15 @@ func TestPersistPartitionUnreliable2B(t *testing.T) {
 	GenericTest(t, "2B", 5, true, true, true, -1, false, false)
 }
 
+// Snapshot flow:
+// 1. onTick() call onRaftGCLogTick() while GC tick is scheduled on logic time
+// 2. onRaftGCLogTick get appliedIdx and firstIdx > cfg.RaftLogGcCountLimit => get compactIdx, then proposeRaftCommand (adminRequest)
+// 3. raft layer receive Propose request and update entries, send back raft cmd request
+// 4. HandleRaftReady() receive the adminRequest and start an raftLogGCTask
+// 5. raftLogGCTask receiver to call gcRaftLog to clean raftLog
+// 6. Use Advance to clear up log entries
+// 7. leader applied snapshot, and send peer requests (heartbeat or append log), peer log is far behind storage, request to get snapshot
+// 8. install snapshot request send to leader, ready state's snap updated, and back to msg layer SaveReadyState() => ApplySnapshot()
 func TestOneSnapshot2C(t *testing.T) {
 	cfg := config.NewTestConfig()
 	cfg.RaftLogGcCountLimit = 10

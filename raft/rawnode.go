@@ -176,6 +176,10 @@ func (rn *RawNode) Ready() Ready {
 		}
 	}
 
+	if !IsEmptySnap(rn.Raft.RaftLog.pendingSnapshot) {
+		ready.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
+	}
+
 	ready.Entries = rn.Raft.RaftLog.unstableEntries()
 	ready.CommittedEntries = rn.Raft.RaftLog.nextEnts()
 	ready.Messages = rn.Raft.msgs
@@ -188,7 +192,8 @@ func (rn *RawNode) HasReady() bool {
 	return len(rn.Raft.msgs) > 0 || // Has message ready to be sent
 		rn.isHardStateChanged() || // Need to store raft state
 		len(rn.Raft.RaftLog.unstableEntries()) > 0 || // Need to update WAL log on leader
-		len(rn.Raft.RaftLog.nextEnts()) > 0 // Need to send peers to commit
+		len(rn.Raft.RaftLog.nextEnts()) > 0 || // Need to send peers to commit
+		!IsEmptySnap(rn.Raft.RaftLog.pendingSnapshot) // pending snapshot waiting for apply
 }
 
 // Advance notifies the RawNode that the application has applied and saved progress in the
@@ -198,7 +203,8 @@ func (rn *RawNode) Advance(rd Ready) {
 
 	rn.Raft.RaftLog.stabled += uint64(len(rd.Entries))
 	rn.Raft.RaftLog.applied += uint64(len(rd.CommittedEntries))
-	rn.Raft.msgs = nil // clear message
+	rn.Raft.msgs = nil                    // clear message
+	rn.Raft.RaftLog.pendingSnapshot = nil // clear pending snapshot
 
 	if !IsEmptyHardState(rd.HardState) {
 		rn.hardState = &rd.HardState
@@ -207,6 +213,9 @@ func (rn *RawNode) Advance(rd Ready) {
 	if rd.SoftState != nil {
 		rn.softState = rd.SoftState
 	}
+
+	// check raftlog has been truncated after applied snapshot
+	rn.Raft.RaftLog.maybeCompact()
 }
 
 // GetProgress return the Progress of this node and its peers, if this

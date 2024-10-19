@@ -44,7 +44,7 @@ type RaftLog struct {
 	// applied is the highest log position that the application has
 	// been instructed to apply to its state machine.
 	// Invariant: applied <= committed
-	applied uint64 // The log index used for the upper application layer
+	applied uint64 // The log index applied to the upper application layer (state machine)
 
 	// log entries with index <= stabled are persisted to storage.
 	// It is used to record the logs that are not persisted by storage yet.
@@ -74,12 +74,12 @@ func newLog(storage Storage) *RaftLog {
 
 	raftLog := new(RaftLog)
 	raftLog.storage = storage
-	raftLog.committed = hardState.Commit
 	raftLog.applied = firstIndex - 1
+	raftLog.committed = hardState.Commit
 	raftLog.stabled = lastIndex
+	raftLog.dummyIndex = firstIndex
 	raftLog.entries = entries
 	raftLog.pendingSnapshot = new(pb.Snapshot)
-	raftLog.dummyIndex = firstIndex
 
 	return raftLog
 }
@@ -89,6 +89,16 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+
+	firstIndex, _ := l.storage.FirstIndex()
+	if firstIndex > l.dummyIndex {
+		// copy not truncated entries
+		entries := l.entries[firstIndex-l.dummyIndex:]
+		l.entries = make([]pb.Entry, len(entries))
+		copy(l.entries, entries)
+	}
+
+	l.dummyIndex = firstIndex
 }
 
 // allEntries return all the entries not compacted.
@@ -129,8 +139,14 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	}
 
 	if i < l.dummyIndex {
-		// get from storage
-		return l.storage.Term(i)
+		if !IsEmptySnap(l.pendingSnapshot) && i == l.pendingSnapshot.Metadata.Index {
+			// get from snapshot
+			return l.pendingSnapshot.Metadata.Term, nil
+		} else {
+			// get from storage
+			return l.storage.Term(i)
+		}
+
 	} else {
 		return l.entries[i-l.dummyIndex].Term, nil
 	}
@@ -180,4 +196,13 @@ func (l *RaftLog) getStartIndexForATerm(term uint64) (uint64, error) {
 	}
 
 	return None, ErrInvalidTerm
+}
+
+func (l *RaftLog) installSnapshot(snap *pb.Snapshot) {
+	l.applied = snap.Metadata.Index
+	l.committed = snap.Metadata.Index
+	l.stabled = snap.Metadata.Index
+	l.dummyIndex = snap.Metadata.Index + 1
+	l.entries = make([]pb.Entry, 0)
+	l.pendingSnapshot = snap
 }

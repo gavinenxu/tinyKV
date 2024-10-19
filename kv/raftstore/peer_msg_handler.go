@@ -72,8 +72,9 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			}
 
 			if request.AdminRequest != nil {
-				// todo handle admin request
-			} else {
+				_, kvWb := d.processAdminRequest(request.AdminRequest, wb)
+				wb = kvWb
+			} else if request.Requests != nil && len(request.Requests) > 0 {
 				response, kvWb := d.processRaftRequest(request, wb)
 				wb = kvWb
 				d.handleProposal(&entry, response)
@@ -84,20 +85,40 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			}
 		}
 
-		// update apply log
-		prevCommitEntry := ready.CommittedEntries[len(ready.CommittedEntries)-1]
-		d.peerStorage.applyState.AppliedIndex = prevCommitEntry.Index
 		if err := wb.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState); err != nil {
 			log.Panic(err)
 		}
 
 		// flush to kv engine
 		wb.MustWriteToDB(d.peerStorage.Engines.Kv)
+
+		// update apply log
+		prevCommitEntry := ready.CommittedEntries[len(ready.CommittedEntries)-1]
+		d.peerStorage.setAppliedIndex(prevCommitEntry.Index)
 	}
 
 	// update raft state
 	d.RaftGroup.Advance(ready)
 
+}
+
+func (d *peerMsgHandler) processAdminRequest(adminRequest *raft_cmdpb.AdminRequest, kvWb *engine_util.WriteBatch) (*raft_cmdpb.AdminResponse, *engine_util.WriteBatch) {
+	response := &raft_cmdpb.AdminResponse{}
+
+	switch adminRequest.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		if adminRequest.CompactLog.GetCompactIndex() > d.peerStorage.truncatedIndex() {
+			// send to GC task, worker's Start()
+			d.ScheduleCompactLog(adminRequest.CompactLog.GetCompactIndex())
+			// update truncate index and term
+			d.peerStorage.setTruncatedIndex(adminRequest.CompactLog.GetCompactIndex())
+			d.peerStorage.setTruncatedTerm(adminRequest.CompactLog.GetCompactTerm())
+		}
+	default:
+		panic(fmt.Sprintf("unknown admin request type: %v", adminRequest.CmdType))
+	}
+
+	return response, kvWb
 }
 
 func (d *peerMsgHandler) processRaftRequest(request *raft_cmdpb.RaftCmdRequest, kvWb *engine_util.WriteBatch) (*raft_cmdpb.RaftCmdResponse, *engine_util.WriteBatch) {
@@ -268,13 +289,32 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	}
 	// Your Code Here (2B).
 
-	// record proposal
-	d.proposals = append(d.proposals, &proposal{
-		index: d.RaftGroup.Raft.RaftLog.LastIndex() + 1,
-		term:  d.RaftGroup.Raft.Term,
-		cb:    cb,
-	})
+	if msg.AdminRequest != nil {
+		// propose admin request
+		d.proposeAdminRequest(msg)
+	} else {
+		// record normal proposal
+		d.proposals = append(d.proposals, &proposal{
+			index: d.RaftGroup.Raft.RaftLog.LastIndex() + 1,
+			term:  d.RaftGroup.Raft.Term,
+			cb:    cb,
+		})
 
+		d.proposeRequest(msg)
+	}
+}
+
+func (d *peerMsgHandler) proposeAdminRequest(msg *raft_cmdpb.RaftCmdRequest) {
+	adminRequest := msg.AdminRequest
+	switch adminRequest.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		d.proposeRequest(msg)
+	default:
+		panic(fmt.Sprintf("unknown admin request type: %v", adminRequest.CmdType))
+	}
+}
+
+func (d *peerMsgHandler) proposeRequest(msg *raft_cmdpb.RaftCmdRequest) {
 	data, err := msg.Marshal()
 	if err != nil {
 		log.Panic(err)
@@ -283,7 +323,6 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	if err = d.RaftGroup.Propose(data); err != nil {
 		log.Panic(err)
 	}
-
 }
 
 func (d *peerMsgHandler) onTick() {
@@ -582,6 +621,7 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 	appliedIdx := d.peerStorage.AppliedIndex()
 	firstIdx, _ := d.peerStorage.FirstIndex()
 	var compactIdx uint64
+	// get compact index to prepare GC
 	if appliedIdx > firstIdx && appliedIdx-firstIdx >= d.ctx.cfg.RaftLogGcCountLimit {
 		compactIdx = appliedIdx
 	} else {

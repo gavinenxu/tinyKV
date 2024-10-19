@@ -225,8 +225,16 @@ func (ps *PeerStorage) truncatedIndex() uint64 {
 	return ps.applyState.TruncatedState.Index
 }
 
+func (ps *PeerStorage) setTruncatedIndex(idx uint64) {
+	ps.applyState.TruncatedState.Index = idx
+}
+
 func (ps *PeerStorage) truncatedTerm() uint64 {
 	return ps.applyState.TruncatedState.Term
+}
+
+func (ps *PeerStorage) setTruncatedTerm(term uint64) {
+	ps.applyState.TruncatedState.Term = term
 }
 
 func (ps *PeerStorage) AppliedIndex() uint64 {

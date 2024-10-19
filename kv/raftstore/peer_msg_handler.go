@@ -72,8 +72,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 			}
 
 			if request.AdminRequest != nil {
-				// todo handle admin request
-			} else {
+				_, kvWb := d.processAdminRequest(request.AdminRequest, wb)
+				wb = kvWb
+			}
+			if request.Requests != nil && len(request.Requests) > 0 {
 				response, kvWb := d.processRaftRequest(request, wb)
 				wb = kvWb
 				d.handleProposal(&entry, response)
@@ -98,6 +100,23 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	// update raft state
 	d.RaftGroup.Advance(ready)
 
+}
+
+func (d *peerMsgHandler) processAdminRequest(adminRequest *raft_cmdpb.AdminRequest, kvWb *engine_util.WriteBatch) (*raft_cmdpb.AdminResponse, *engine_util.WriteBatch) {
+	response := &raft_cmdpb.AdminResponse{}
+
+	switch adminRequest.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		if adminRequest.CompactLog.GetCompactIndex() > d.peerStorage.truncatedIndex() {
+			// send to GC task, worker's Start()
+			d.ScheduleCompactLog(adminRequest.CompactLog.GetCompactIndex())
+			// update truncate index and term
+			d.peerStorage.setTruncatedIndex(adminRequest.CompactLog.GetCompactIndex())
+			d.peerStorage.setTruncatedTerm(adminRequest.CompactLog.GetCompactTerm())
+		}
+	}
+
+	return response, kvWb
 }
 
 func (d *peerMsgHandler) processRaftRequest(request *raft_cmdpb.RaftCmdRequest, kvWb *engine_util.WriteBatch) (*raft_cmdpb.RaftCmdResponse, *engine_util.WriteBatch) {

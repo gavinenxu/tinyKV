@@ -39,12 +39,12 @@ type RaftLog struct {
 
 	// committed is the highest log position that is known to be in
 	// stable storage on a quorum of nodes.
-	committed uint64 // To record the majority raft peer's log last index
+	committed uint64 // To record the majority raft peer's log last index, log entry index submitted on memory
 
 	// applied is the highest log position that the application has
 	// been instructed to apply to its state machine.
 	// Invariant: applied <= committed
-	applied uint64 // The log index applied to the upper application layer (state machine)
+	applied uint64 // The log index applied to the upper application layer (state machine) on memory
 
 	// log entries with index <= stabled are persisted to storage.
 	// It is used to record the logs that are not persisted by storage yet.

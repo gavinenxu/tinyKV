@@ -197,7 +197,7 @@ func newRaft(c *Config) *Raft {
 	rf.electionTimeout = c.ElectionTick
 	rf.heartbeatElapsed = 0
 	rf.heartbeatElapsed = 0
-	rf.leadTransferee = 0
+	rf.leadTransferee = None
 	rf.PendingConfIndex = 0
 	rf.randomElectionTimeout = 0
 
@@ -247,6 +247,13 @@ func (r *Raft) sendAppend(to uint64) bool {
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgHeartbeat,
+		From:    r.id,
+		To:      to,
+		Term:    r.Term,
+		Commit:  r.RaftLog.committed,
+	})
 }
 
 // tick advances the internal logical clock by a single tick.
@@ -314,6 +321,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.Vote = None
 	r.Lead = lead
 	r.electionElapsed = 0
+	r.leadTransferee = None
 	// guarantee follower won't start an election during this period
 	r.resetRandomElectionTimeout()
 }
@@ -389,7 +397,13 @@ func (r *Raft) handleFollowerStep(m pb.Message) {
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgHeartbeatResponse:
 	case pb.MessageType_MsgTransferLeader:
+		if r.Lead != None {
+			// should transfer this msg to leader
+			m.To = r.Lead
+			r.msgs = append(r.msgs, m)
+		}
 	case pb.MessageType_MsgTimeoutNow:
+		r.handleTimeoutNow(m)
 	}
 }
 
@@ -412,7 +426,13 @@ func (r *Raft) handleCandidateStep(m pb.Message) {
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgHeartbeatResponse:
 	case pb.MessageType_MsgTransferLeader:
+		if r.Lead != None {
+			// should transfer this msg to leader
+			m.To = r.Lead
+			r.msgs = append(r.msgs, m)
+		}
 	case pb.MessageType_MsgTimeoutNow:
+		r.handleTimeoutNow(m)
 	}
 }
 
@@ -435,6 +455,7 @@ func (r *Raft) handleLeaderStep(m pb.Message) {
 	case pb.MessageType_MsgHeartbeatResponse:
 		r.handleHeartbeatResponse(m)
 	case pb.MessageType_MsgTransferLeader:
+		r.handleLeadershipTransfer(m)
 	case pb.MessageType_MsgTimeoutNow:
 	}
 }
@@ -576,11 +597,7 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 
 			// check need to update leader's commit index
 			mmi := r.getMajorityMatchIndex()
-			matchIndexesTerm, _ := r.RaftLog.Term(mmi)
-			// To update commit index's requirement is:
-			// leader's commited index is far behind the most match index
-			// current leader's term is same as log's term, because Raft won't commit previous log's term
-			if r.RaftLog.committed < mmi && r.Term == matchIndexesTerm {
+			if r.canLeaderToCommit(mmi) {
 				r.RaftLog.committed = mmi
 
 				// Note: since most peers has update Next Index and raftLog, but minority may not update it so far
@@ -592,6 +609,15 @@ func (r *Raft) handleAppendEntriesResponse(m pb.Message) {
 					r.sendAppend(peer)
 				}
 			}
+		}
+
+		// transfer leadership to transferee if append log has been updated
+		if r.leadTransferee == m.From && r.Prs[m.From].Match == r.RaftLog.LastIndex() {
+			r.msgs = append(r.msgs, pb.Message{
+				MsgType: pb.MessageType_MsgTimeoutNow,
+				From:    r.id,
+				To:      m.From,
+			})
 		}
 	}
 }
@@ -611,13 +637,7 @@ func (r *Raft) handleBeat(m pb.Message) {
 			continue
 		}
 
-		r.msgs = append(r.msgs, pb.Message{
-			MsgType: pb.MessageType_MsgHeartbeat,
-			From:    r.id,
-			To:      peer,
-			Term:    r.Term,
-			Commit:  r.RaftLog.committed,
-		})
+		r.sendHeartbeat(peer)
 	}
 }
 
@@ -809,6 +829,7 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 // receiver:  leader
 // sendTo: candidate and follower
 func (r *Raft) handlePropose(m pb.Message) {
+	// save logs
 	lastIndex := r.RaftLog.LastIndex()
 	for i, entry := range m.Entries {
 		if entry.Term == None {
@@ -819,6 +840,12 @@ func (r *Raft) handlePropose(m pb.Message) {
 		}
 	}
 	r.RaftLog.appendNewEntries(m.Entries)
+
+	// if it's on transferring leadership, stop broadcasting logs to peers
+	// to prevent from starting leader election in append log response with an infinity loop
+	if r.leadTransferee != None {
+		return
+	}
 
 	// update match and next index for leader itself
 	r.Prs[r.id].Match = r.RaftLog.LastIndex()
@@ -841,16 +868,86 @@ func (r *Raft) handlePropose(m pb.Message) {
 	}
 }
 
+// handleLeadershipTransfer handle leadership transfer RPC request
+// requester: RawNode, request body: {from, to}
+// receiver:  leader
+// sendTo: candidate and follower
+func (r *Raft) handleLeadershipTransfer(m pb.Message) {
+	if r.State != StateLeader || m.From == r.id {
+		return
+	}
+
+	if _, ok := r.Prs[m.From]; !ok {
+		// no transferee
+		return
+	}
+
+	// update transferee
+	r.leadTransferee = m.From
+
+	// just compare index, don't need to take care of term
+	if r.Prs[m.From].Match < r.RaftLog.LastIndex() {
+		// current leader's log is more update to date, need to help transferee update logs
+		r.sendAppend(m.From)
+	} else {
+		r.msgs = append(r.msgs, pb.Message{
+			MsgType: pb.MessageType_MsgTimeoutNow,
+			From:    r.id,
+			To:      m.From,
+		})
+	}
+}
+
+// handleLeadershipTransfer handle timeout RPC request to start an election immediately
+// requester: leader, request body: {from, to}
+// receiver:  follower, candidate
+// sendTo: none
+func (r *Raft) handleTimeoutNow(m pb.Message) {
+	if _, ok := r.Prs[r.id]; !ok {
+		// a node that has been removed from the group, nothing happens.
+		return
+	}
+
+	r.Step(pb.Message{
+		MsgType: pb.MessageType_MsgHup,
+		From:    r.id,
+		To:      r.id,
+	})
+}
+
 // <----------------------- End Message Handler --------------------------->
 
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	r.Prs[id] = &Progress{
+		Match: None,
+		Next:  None + 1,
+	}
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	if _, ok := r.Prs[id]; ok {
+		delete(r.Prs, id)
+
+		// Just in case a node have accepted conf change proposal, but the leader haven't commit the previous append log
+		// we handle the append logs here
+		if r.State == StateLeader {
+			mmi := r.getMajorityMatchIndex()
+			if r.canLeaderToCommit(mmi) {
+				r.RaftLog.committed = mmi
+
+				for peer := range r.Prs {
+					if peer == r.id {
+						continue
+					}
+					r.sendAppend(peer)
+				}
+			}
+		}
+	}
 }
 
 func (r *Raft) resetRandomElectionTimeout() {
@@ -881,6 +978,18 @@ func (r *Raft) getMajorityMatchIndex() uint64 {
 	// get most match index greater than mid-index
 	mid := (len(matchIndexes) - 1) / 2
 	return matchIndexes[mid]
+}
+
+func (r *Raft) canLeaderToCommit(majorityMatchIndex uint64) bool {
+	if r.State != StateLeader {
+		return false
+	}
+
+	matchIndexesTerm, _ := r.RaftLog.Term(majorityMatchIndex)
+	// To update commit index's requirement is:
+	// leader's commited index is far behind the most match index
+	// current leader's term is same as log's term, because Raft won't commit previous log's term
+	return r.RaftLog.committed < majorityMatchIndex && r.Term == matchIndexesTerm
 }
 
 func (r *Raft) initProgresses(peers []uint64, index uint64) map[uint64]*Progress {

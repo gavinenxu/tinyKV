@@ -206,3 +206,12 @@ func (l *RaftLog) installSnapshot(snap *pb.Snapshot) {
 	l.entries = make([]pb.Entry, 0)
 	l.pendingSnapshot = snap
 }
+
+func (l *RaftLog) getPendingConfIndex() uint64 {
+	for i := l.applied + 1; i < l.LastIndex(); i++ {
+		if l.entries[i].EntryType == pb.EntryType_EntryConfChange {
+			return i
+		}
+	}
+	return None
+}

@@ -12,6 +12,58 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/*
+
+Raft Peer State: Match, Next
+These terms describe the relationship between a follower node and the leader during log replication.
+
+* Match Index:
+
+The index of the highest log entry known to be replicated on a follower.
+Maintained by the leader for each follower.
+Used during leader election and log commitment. For example, to determine the "majority committed index."
+
+* Next Index:
+
+The index of the next log entry the leader will send to a follower.
+Starts as leader's last log index + 1 when the leader is elected.
+Adjusted during log synchronization (e.g., decreased if a follower rejects entries due to inconsistencies).
+
+Raft Log State: Committed, Applied, Stabled
+These terms describe the lifecycle of log entries within a node.
+
+* Committed Index:
+
+The highest log entry index that is safely replicated to a majority of nodes and guaranteed to be durable.
+Once an entry is committed, it can be applied to the state machine.
+
+* Applied Index:
+
+The highest log entry index that has been applied to the state machine on a node.
+Always ≤ the committed index, as you can’t apply an uncommitted log entry.
+
+* Stabled Index:
+
+The highest log entry index that has been persisted to stable storage (disk or equivalent) on the local node.
+Ensures data durability even in case of crashes.
+Typically ≥ committed but can lag behind if there’s a delay in writing logs to storage.
+
+Example Workflow
+1. Log Replication:
+The leader sends new entries to followers, starting at their Next Index.
+When a follower acknowledges an entry, the leader updates the follower's Match Index and advances the Next Index.
+
+2. Log Commitment:
+The leader calculates the Committed Index as the highest index replicated on a majority of followers.
+Once an entry is committed, it is guaranteed to remain part of the log (safety).
+
+3. State Machine Application:
+Each node independently applies committed log entries to its state machine, advancing its Applied Index.
+
+4. Persistence:
+Nodes persist log entries to stable storage, updating their Stabled Index.
+*/
+
 package raft
 
 import (
@@ -252,7 +304,7 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		From:    r.id,
 		To:      to,
 		Term:    r.Term,
-		Commit:  r.RaftLog.committed,
+		// Commit:  r.RaftLog.committed, // Note: no need to send committed index
 	})
 }
 
@@ -349,7 +401,7 @@ func (r *Raft) becomeLeader() {
 	lastIndex := r.RaftLog.LastIndex()
 	for _, progress := range r.Prs {
 		progress.Next = lastIndex + 1
-		progress.Match = 0
+		progress.Match = lastIndex
 	}
 
 	// Note: newly elected leader should append a noop entry on its term
@@ -652,8 +704,8 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 		From:    r.id,
 		To:      m.From,
 		Term:    r.Term,
-		Commit:  r.RaftLog.committed,
-		Reject:  false,
+		//Commit:  r.RaftLog.committed, // no need to send committed index
+		Reject: false,
 	}
 
 	if r.Term > m.Term {
@@ -672,8 +724,11 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 func (r *Raft) handleHeartbeatResponse(m pb.Message) {
 	if m.Reject {
 		r.becomeFollower(m.Term, None)
-	} else if r.RaftLog.committed > m.Commit {
-		r.sendAppend(m.From)
+	} else {
+		// we should use match index to check whether to send append request
+		if r.Prs[m.From].Match < r.RaftLog.LastIndex() {
+			r.sendAppend(m.From)
+		}
 	}
 }
 

@@ -112,7 +112,7 @@ func (l *RaftLog) allEntries() []pb.Entry {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
-	return l.EntriesFrom(l.stabled + 1)
+	return l.entriesFrom(l.stabled + 1)
 }
 
 // nextEnts returns all the committed but not applied entries
@@ -152,7 +152,7 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	}
 }
 
-func (l *RaftLog) EntryAt(i uint64) (pb.Entry, error) {
+func (l *RaftLog) entryAt(i uint64) (pb.Entry, error) {
 	if i < 0 || i > l.LastIndex() {
 		return pb.Entry{}, ErrInvalidIndex
 	}
@@ -161,7 +161,7 @@ func (l *RaftLog) EntryAt(i uint64) (pb.Entry, error) {
 }
 
 // EntriesFrom return the global index of log entries from start index
-func (l *RaftLog) EntriesFrom(startIndex uint64) []pb.Entry {
+func (l *RaftLog) entriesFrom(startIndex uint64) []pb.Entry {
 	if startIndex < l.dummyIndex {
 		log.Panicf("index out of range: %d", startIndex)
 	}
@@ -209,7 +209,8 @@ func (l *RaftLog) installSnapshot(snap *pb.Snapshot) {
 
 func (l *RaftLog) getPendingConfIndex() uint64 {
 	for i := l.applied + 1; i < l.LastIndex(); i++ {
-		if l.entries[i].EntryType == pb.EntryType_EntryConfChange {
+		entry, _ := l.entryAt(i)
+		if entry.EntryType == pb.EntryType_EntryConfChange {
 			return i
 		}
 	}

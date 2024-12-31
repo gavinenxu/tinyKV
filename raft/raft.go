@@ -210,7 +210,7 @@ type Raft struct {
 	// (Used in 3A leader transfer)
 	leadTransferee uint64
 
-	transferElapsed int
+	//transferElapsed int
 
 	// Only one conf change may be pending (in the log, but not yet
 	// applied) at a time. This is enforced via PendingConfIndex, which
@@ -252,7 +252,6 @@ func newRaft(c *Config) *Raft {
 	rf.heartbeatElapsed = 0
 	rf.heartbeatElapsed = 0
 	rf.leadTransferee = None
-	rf.transferElapsed = 0
 	rf.PendingConfIndex = rf.RaftLog.getPendingConfIndex()
 	rf.randomElectionTimeout = 0
 
@@ -280,7 +279,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	newLogs := make([]*pb.Entry, 0)
 
 	// Copy new log from leader's log entries
-	for _, entry := range r.RaftLog.EntriesFrom(prevLogIndex + 1) {
+	for _, entry := range r.RaftLog.entriesFrom(prevLogIndex + 1) {
 		newLogs = append(newLogs, &entry)
 	}
 
@@ -366,14 +365,6 @@ func (r *Raft) handleLeaderTick() {
 			Term:    r.Term,
 		})
 	}
-
-	if r.leadTransferee != None {
-		// 在选举超时后领导权禅让仍然未完成，则 leader 应该终止领导权禅让，这样可以恢复客户端请求
-		r.transferElapsed++
-		if r.transferElapsed >= r.electionTimeout {
-			r.leadTransferee = None
-		}
-	}
 }
 
 // becomeFollower transform this peer's state to Follower
@@ -415,6 +406,7 @@ func (r *Raft) becomeLeader() {
 		progress.Match = lastIndex
 	}
 
+	// update conflict index
 	r.PendingConfIndex = r.RaftLog.getPendingConfIndex()
 
 	// Note: newly elected leader should append a noop entry on its term
@@ -593,7 +585,7 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 						start := prevLogIndex + 1
 						i := start
 						for ; i <= lastLogIndex && i-start < uint64(len(m.Entries)); i++ {
-							logEntry, _ := r.RaftLog.EntryAt(i)
+							logEntry, _ := r.RaftLog.entryAt(i)
 							if logEntry.Term != m.Entries[i-start].Term || logEntry.Index != m.Entries[i-start].Index {
 								// find the conflict index i here
 								break
@@ -991,9 +983,11 @@ func (r *Raft) handleTimeoutNow(m pb.Message) {
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
-	r.Prs[id] = &Progress{
-		Match: None,
-		Next:  None + 1,
+	if _, ok := r.Prs[id]; !ok {
+		r.Prs[id] = &Progress{
+			Match: None,
+			Next:  None + 1,
+		}
 	}
 	// clear config change
 	r.PendingConfIndex = None

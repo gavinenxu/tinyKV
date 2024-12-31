@@ -91,6 +91,6 @@ require (
 	sigs.k8s.io/yaml v1.1.0 // indirect
 )
 
-go 1.22
+go 1.23
 
 replace github.com/pingcap/tidb => github.com/pingcap-incubator/tinysql v0.0.0-20200518090433-a7d00f9e6aa7

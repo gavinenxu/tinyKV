@@ -112,6 +112,9 @@ func (l *RaftLog) allEntries() []pb.Entry {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	// Your Code Here (2A).
+	if l.stabled == l.LastIndex() {
+		return make([]pb.Entry, 0)
+	}
 	return l.entriesFrom(l.stabled + 1)
 }
 

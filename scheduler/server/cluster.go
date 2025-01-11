@@ -40,6 +40,11 @@ var (
 	defaultChangedRegionsLimit = 10000
 )
 
+var (
+	errRegionEpochEmpty = errors.New("region epoch is empty")
+	errRegionStale      = errors.New("region is stale")
+)
+
 // RaftCluster is used for cluster config management.
 // Raft cluster key format:
 // cluster 1 -> /1/raft, value is metapb.Cluster
@@ -279,6 +284,32 @@ func (c *RaftCluster) handleStoreHeartbeat(stats *schedulerpb.StoreStats) error 
 // processRegionHeartbeat updates the region information.
 func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 	// Your Code Here (3C).
+	regionEpoch := region.GetRegionEpoch()
+	if regionEpoch == nil {
+		return errRegionEpochEmpty
+	}
+
+	oldRegion := c.GetRegion(region.GetID())
+	if oldRegion == nil {
+		regions := c.ScanRegions(region.GetStartKey(), region.GetEndKey(), -1)
+		for _, r := range regions {
+			eachEpoch := r.GetRegionEpoch()
+			if regionEpoch.Version < eachEpoch.Version || regionEpoch.ConfVer < eachEpoch.ConfVer {
+				return errRegionStale
+			}
+		}
+	} else {
+		oldRegionEpoch := oldRegion.GetRegionEpoch()
+		if regionEpoch.Version < oldRegionEpoch.Version || regionEpoch.ConfVer < oldRegionEpoch.ConfVer {
+			return errRegionStale
+		}
+	}
+
+	// update region and store
+	_ = c.putRegion(region)
+	for storeId := range region.GetStoreIds() {
+		c.updateStoreStatusLocked(storeId)
+	}
 
 	return nil
 }

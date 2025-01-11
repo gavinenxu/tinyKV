@@ -14,10 +14,12 @@
 package schedulers
 
 import (
+	"fmt"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/core"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule/operator"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule/opt"
+	"sort"
 )
 
 func init() {
@@ -77,6 +79,79 @@ func (s *balanceRegionScheduler) IsScheduleAllowed(cluster opt.Cluster) bool {
 
 func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operator {
 	// Your Code Here (3C).
+	stores := make([]*core.StoreInfo, 0)
+	for _, store := range cluster.GetStores() {
+		if store.IsUp() && store.DownTime() < cluster.GetMaxStoreDownTime() {
+			stores = append(stores, store)
+		}
+	}
+	if len(stores) == 1 {
+		return nil
+	}
 
-	return nil
+	// store from large to small
+	sort.Slice(stores, func(i, j int) bool {
+		return stores[i].GetRegionSize() >= stores[j].GetRegionSize()
+	})
+
+	var region *core.RegionInfo
+	var from *core.StoreInfo
+	for _, store := range stores {
+		var regions core.RegionsContainer
+		cluster.GetPendingRegionsWithLock(store.GetID(), func(container core.RegionsContainer) {
+			regions = container
+		})
+		region = regions.RandomRegion(nil, nil)
+		if region != nil {
+			from = store
+			break
+		}
+
+		cluster.GetFollowersWithLock(store.GetID(), func(container core.RegionsContainer) {
+			regions = container
+		})
+		region = regions.RandomRegion(nil, nil)
+		if region != nil {
+			from = store
+			break
+		}
+
+		cluster.GetLeadersWithLock(store.GetID(), func(container core.RegionsContainer) {
+			regions = container
+		})
+		region = regions.RandomRegion(nil, nil)
+		if region != nil {
+			from = store
+			break
+		}
+	}
+	if region == nil || from == nil {
+		return nil
+	}
+
+	storeIds := region.GetStoreIds()
+	if len(storeIds) < cluster.GetMaxReplicas() {
+		return nil
+	}
+
+	var to *core.StoreInfo
+	for _, store := range stores {
+		// find a 'to' store not in from store
+		if _, ok := storeIds[store.GetID()]; !ok {
+			to = store
+		}
+	}
+	if to == nil {
+		return nil
+	}
+
+	if from.GetRegionSize()-to.GetRegionSize() < region.GetApproximateSize() {
+		return nil
+	}
+
+	// create new peer and operator
+	peer, _ := cluster.AllocPeer(to.GetID())
+	op, _ := operator.CreateMovePeerOperator(fmt.Sprintf("%d to %d", from.GetID(), to.GetID()), cluster, region, operator.OpBalance, from.GetID(), to.GetID(), peer.Id)
+
+	return op
 }

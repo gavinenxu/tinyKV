@@ -11,7 +11,7 @@ import (
 
 // RawGet return the corresponding Get response based on RawGetRequest's CF and Key fields
 func (server *Server) RawGet(_ context.Context, req *kvrpcpb.RawGetRequest) (*kvrpcpb.RawGetResponse, error) {
-	reader, err := server.storage.Reader(nil)
+	reader, err := server.storage.Reader(req.Context)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +39,7 @@ func (server *Server) RawPut(_ context.Context, req *kvrpcpb.RawPutRequest) (*kv
 			Cf:    req.GetCf(),
 		},
 	}
-	err := server.storage.Write(nil, []storage.Modify{data})
+	err := server.storage.Write(req.GetContext(), []storage.Modify{data})
 	return nil, err
 }
 
@@ -52,14 +52,14 @@ func (server *Server) RawDelete(_ context.Context, req *kvrpcpb.RawDeleteRequest
 			Cf:  req.GetCf(),
 		},
 	}
-	err := server.storage.Write(nil, []storage.Modify{data})
+	err := server.storage.Write(req.GetContext(), []storage.Modify{data})
 	return nil, err
 }
 
 // RawScan scan the data starting from the start key up to limit. and return the corresponding result
 func (server *Server) RawScan(_ context.Context, req *kvrpcpb.RawScanRequest) (*kvrpcpb.RawScanResponse, error) {
 	// Hint: Consider using reader.IterCF
-	reader, err := server.storage.Reader(nil)
+	reader, err := server.storage.Reader(req.GetContext())
 	defer reader.Close()
 	if err != nil {
 		return nil, err

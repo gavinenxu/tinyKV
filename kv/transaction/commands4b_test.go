@@ -386,6 +386,7 @@ func TestPrewriteMultiple4B(t *testing.T) {
 
 	builder.assert([]kv{
 		{cf: engine_util.CfDefault, key: []byte{4}, value: []byte{1, 3, 5}},
+		{cf: engine_util.CfDefault, key: []byte{255}, value: []byte{45}},
 	})
 }
 

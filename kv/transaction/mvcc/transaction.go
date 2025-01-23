@@ -22,11 +22,14 @@ func (ke *KeyError) Error() string {
 
 // MvccTxn groups together writes as part of a single transaction. It also provides an abstraction over low-level
 // storage, lowering the concepts of timestamps, writes, and locks into plain keys and values.
+// mvcc transaction is identified by the startTs (which equals to transactionId)
 type MvccTxn struct {
 	StartTS uint64
 	Reader  storage.StorageReader
 	writes  []storage.Modify
 }
+
+// Default, Write key => encoded(key+ts), Lock key => key
 
 func NewMvccTxn(reader storage.StorageReader, startTs uint64) *MvccTxn {
 	return &MvccTxn{
